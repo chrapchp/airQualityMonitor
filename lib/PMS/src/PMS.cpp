@@ -4,12 +4,20 @@
 
 /* From https://github.com/SwapBap/PMS */
 
-PMS::PMS(Stream &stream, void (*callBack)(), Stream *debugPort)
+PMS::PMS(Stream &stream, void (*callBack)(), Stream &debugPort)
 {
   this->_stream = &stream;
   onReadReady = callBack;
-    _debugPort = debugPort;
+    _debugPort = &debugPort;
 }
+
+PMS::PMS(Stream &stream, void (*callBack)())
+{
+  this->_stream = &stream;
+  onReadReady = callBack;
+    _debugPort = NULL;
+}
+
 
 void PMS::setActivePollRate(uint32_t rate)
 {

@@ -61,7 +61,8 @@ public:
     uint16_t PM_TOTALPARTICLES_10_0;
   };
 
-  PMS(Stream&,  void(*callBack)(),  Stream *debugPort );
+  PMS(Stream&,  void(*callBack)(),  Stream&  );
+  PMS(Stream&,  void(*callBack)() );
 
   void sleep();
   void wakeUp();

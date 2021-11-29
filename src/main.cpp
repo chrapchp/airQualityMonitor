@@ -33,7 +33,6 @@ SHT30/31 (Temperature/Humidity Sensor)
 #include <OLEDDisplayUi.h>
 
 #include <Adafruit_SHT31.h>
-//#include <Adafruit_PM25AQI.h>
 
 #include "AQI.h"
 #include "sensair8.h"
@@ -81,27 +80,18 @@ Adafruit_SHT31 sht31 = Adafruit_SHT31();
 float ambientTemperature;
 float ambientRelativeHumidity;
 
-//PM25 pm25Sensor = PM25();
-
-//Adafruit_PM25AQI pm25Sensor = Adafruit_PM25AQI();
-//PM25_AQI_Data pm25Data;
 SoftwareSerial pmSerial(D5, D6);
 #ifdef DEBUG
-PMS pm25Sensor(pmSerial, onPM25ReadReady, &Serial);
+PMS pm25Sensor(pmSerial, onPM25ReadReady, Serial);
 #else
-PMS pm25Sensor(pmSerial, PMS::MODE_PASSIVE, onPM25ReadReady, NULL);
+PMS pm25Sensor(pmSerial, onPM25ReadReady);
 #endif
 PMS::DATA pm25Data;
 
 SSD1306Wire display(0x3c, SDA, SCL, GEOMETRY_64_48);
-//OLEDDisplayUi ui(&display);
 
-// This array keeps function pointers to all frames
 // frames are the single views that slide in
-
 function_t frames[] = {displayHome, displayPM25, displayPM25Count1, displayPM25Count2};
-
-// how many frames are there?
 int frameCount = 4;
 int currentFrame = 1;
 
@@ -151,14 +141,6 @@ void setup()
   provisionWifi();
 #endif
 
-  // ui.setTargetFPS(1);
-  // ui.setIndicatorPosition(BOTTOM);
-  // ui.setIndicatorDirection(LEFT_RIGHT);
-  // ui.setFrameAnimation(SLIDE_LEFT);
-  // ui.setFrames(frames, frameCount);
-  // ui.setOverlays(overlays, overlaysCount);
-  // ui.setTimePerTransition(3);
-  // ui.init();
   display.flipScreenVertically();
 
   for (int i = SENSOR8_WARMUP_DELAY; i > 0; i--)
@@ -177,14 +159,6 @@ void loop()
 #ifdef ENABLE_WIFI
   publishData.refresh();
 #endif
-
-  //ui.update();
-
-  // create payload
-
-  // String payload = "{\"wifi\":" + String(WiFi.RSSI()) + ",";
-
-  // payload = payload + "}";
 }
 
 // setup Wifi, once saved only a disconnect will reset will allow a new hotspot
@@ -395,7 +369,6 @@ void disableLED()
 
 void onOLEDRefresh()
 {
-  Serial << "Invoking frame " << currentFrame << endl;
 
   frames[currentFrame - 1](&display);
   currentFrame++;
