@@ -1,0 +1,8 @@
+{
+    "files.associations": {
+        "system_error": "cpp",
+        "condition_variable": "cpp",
+        "*.tcc": "cpp"
+    },
+    "cmake.configureOnOpen": false
+}
