@@ -7,7 +7,7 @@ void onPM25ReadReady();
 void tracePM25Data();
 
 SoftwareSerial pmSerial(D5, D6);                                       // PM25 sensor wired to D5,D6 on ESP8266 mini
-PMS pm25Sensor(pmSerial,  onPM25ReadReady, &Serial); // default active read rat is 5 s
+PMS pm25Sensor(pmSerial,  onPM25ReadReady, Serial); // default active read rat is 5 s
 PMS::DATA pm25Data;
 
 void setup()
