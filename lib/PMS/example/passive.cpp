@@ -6,8 +6,8 @@
 void onPM25ReadReady();
 void tracePM25Data();
 
-SoftwareSerial pmSerial(D5, D6);                                       // PM25 sensor wired to D5,D6 on ESP8266 mini
-PMS pm25Sensor(pmSerial,  onPM25ReadReady, Serial); // default sleep duration is 30s
+SoftwareSerial pmSerial(D5, D6);                   // PM25 sensor wired to D5,D6 on ESP8266 mini
+PMS pm25Sensor(pmSerial, onPM25ReadReady, Serial); // default sleep duration is 30s
 PMS::DATA pm25Data;
 
 void setup()
@@ -35,7 +35,7 @@ void onPM25ReadReady()
   {
 
     Serial << "Could not read from PM25 sensor" << endl;
-    pm25Sensor.sleep(); // sometimes during startup things get mangled, sleep and things will recover. 
+    pm25Sensor.sleep(); // sometimes during startup things get mangled, sleep and things will recover.
   }
   else
   {

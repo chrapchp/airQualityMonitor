@@ -24,6 +24,9 @@ SHT30/31 (Temperature/Humidity Sensor)
 #include <WiFiManager.h>
 #include <ESP8266WiFi.h>
 #include <ESP8266HTTPClient.h>
+#include <PubSubClient.h>
+
+#include <ArduinoJson.h>
 
 #include <Wire.h>
 #include <Streaming.h>
@@ -41,9 +44,11 @@ SHT30/31 (Temperature/Humidity Sensor)
 //#include "PM25.h"
 
 #define CO2_RH_POLL_RATE 10000            // ms
-#define MQTT_PUBLISH_RATE 30000           // ms
+#define MQTT_PUBLISH_RATE 30000            // ms
 #define FAULT_WAIT_WIFI_CONNECT_RATE 1000 //ms
-#define WIFI_FAULT_RATE 500               // ms
+#define MQTT_FAULT_RATE 500               // ms
+#define WIFI_MAX_RETRIES 3
+#define WIFI_WAIT_TIME 5000 // ms how long to wait for a connection
 
 #define OLED_REFRESH_RATE 4000 //ms
 
@@ -56,8 +61,33 @@ SHT30/31 (Temperature/Humidity Sensor)
 
 typedef void (*function_t)(SSD1306Wire *display); // for array if functions. OLED display frame
 
+#define TEST "purple2.4"
+
+const char *ssid = WIFI_SSID;
+const char *password = WIFI_PWD;
+const char *mqtt_server = "192.168.1.86";
+
+// String clientID = "AirQuality002";
+// const char *hostCommandTopic = "AirQuality002";
+// const char *mqttTopic = "Home/Hydroponic/AirQuality002/EU";
+// const char *wifiHostName = "AirQuality002";
+
+String clientID = "AirQuality001";
+const char *hostCommandTopic = "AirQuality001";
+const char *mqttTopic = "Home/Hydroponic/AirQuality001/EU";
+const char *wifiHostName = "AirQuality001";
+
+
+
+char mqttMsgOut[350];
+WiFiClient wifiClient;
+PubSubClient mqttClient(mqtt_server, 1883, wifiClient);
+StaticJsonDocument<100> mqttMsgIn;
+
 // forware declarations
 void displaySplash(SSD1306Wire *display, uint16 remainingTime);
+void displayWifi(SSD1306Wire *display, char status);
+
 void provisionWifi();
 void tracePM25Data();
 void displayOverlay(SSD1306Wire *display);
@@ -67,7 +97,9 @@ void displayPM25Count1(SSD1306Wire *display);
 void displayPM25Count2(SSD1306Wire *display);
 void onreadT_RH_CO2Tmr();
 
-void onPublishData();
+void onpublishDataTmr();
+void reconnect();
+void onMQTTMessage(char *topic, byte *payload, unsigned int length);
 
 void onPM25ReadReady();
 
@@ -106,7 +138,7 @@ AQI_Data airQualityData;
 const char *aqiUS[7] = {"Good", "UnHealthySG", "Unhealthy", "V-Unhealthy", "Hazardous", "Uknown"};
 
 DA_NonBlockingDelay readT_RH_CO2Tmr = DA_NonBlockingDelay(CO2_RH_POLL_RATE, onreadT_RH_CO2Tmr);
-DA_NonBlockingDelay publishData = DA_NonBlockingDelay(MQTT_PUBLISH_RATE, onPublishData);
+DA_NonBlockingDelay publishDataTmr = DA_NonBlockingDelay(MQTT_PUBLISH_RATE, onpublishDataTmr);
 DA_NonBlockingDelay faultLEDTmr = DA_NonBlockingDelay(FAULT_WAIT_WIFI_CONNECT_RATE, onfaultLEDTmrBlink);
 DA_NonBlockingDelay refreshDisplayTmr = DA_NonBlockingDelay(OLED_REFRESH_RATE, onOLEDRefresh);
 
@@ -129,6 +161,8 @@ void setup()
   pmSerial.begin(9600);
 
   display.init();
+  display.flipScreenVertically();
+
   pm25Sensor.passiveMode();
   pm25Sensor.wakeUp();
   // overide sleep duration if required but laser/fan should be allowe some time to ramp up 30s is good low end number
@@ -139,9 +173,11 @@ void setup()
 
 #ifdef ENABLE_WIFI
   provisionWifi();
-#endif
+  mqttClient.setBufferSize(380);
+  mqttClient.setServer(mqtt_server, 1883);
+  mqttClient.setCallback(onMQTTMessage);
 
-  display.flipScreenVertically();
+#endif
 
   for (int i = SENSOR8_WARMUP_DELAY; i > 0; i--)
   {
@@ -157,31 +193,84 @@ void loop()
   pm25Sensor.refresh();
   refreshDisplayTmr.refresh();
 #ifdef ENABLE_WIFI
-  publishData.refresh();
+  publishDataTmr.refresh();
+  mqttClient.loop();
 #endif
 }
 
-// setup Wifi, once saved only a disconnect will reset will allow a new hotspot
-// https://github.com/tzapu/WiFiManager
-void provisionWifi()
+void reconnect()
 {
-  WiFiManager wifiManager;
-  //WiFi.disconnect();
-  String HOTSPOT = "Cogito-" + String(ESP.getChipId(), HEX);
-  wifiManager.setTimeout(120);
-  if (!wifiManager.autoConnect((const char *)HOTSPOT.c_str()))
+
+  if (!mqttClient.connected())
   {
 #ifdef DEBUG
-    Serial << "WiFi Connect Failed." << endl;
+    Serial << "Attempting MQTT connection..." << endl;
 #endif
-    delay(2000);
-    ESP.restart();
-    delay(2000);
-    faultLEDTmr.setDelay(FAULT_WAIT_WIFI_CONNECT_RATE);
-    faultLEDTmr.resume();
+    // Create a random client ID
+    clientID += String(random(0xffff), HEX);
+    // Attempt to connect
+    if (mqttClient.connect(clientID.c_str()))
+    {
+#ifdef DEBUG
+      Serial << "Connected.." << endl;
+#endif
+      //mqttClient.publish("outTopic", "hello world");
+      mqttClient.subscribe(hostCommandTopic);
+    }
+    else
+    {
+#ifdef DEBUG
+      Serial << "MQTT Connect failed:(" << mqttClient.state() << ")" << endl;
+#endif
+
+      faultLEDTmr.setDelay(MQTT_FAULT_RATE);
+      faultLEDTmr.resume();
+    }
   }
-  else
-    disableLED();
+}
+
+void provisionWifi()
+{
+  delay(10);
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(ssid, password);
+  bool toggleStatus = false;
+
+  while (WiFi.status() != WL_CONNECTED)
+  {
+    delay(500);
+    displayWifi(&display, toggleStatus ? '+' : '-');
+    toggleStatus = !toggleStatus;
+
+#ifdef DEBUG
+    Serial << ".";
+#endif
+  }
+  randomSeed(micros());
+  WiFi.hostname(wifiHostName);
+#ifdef DEBUG
+  Serial << endl
+         << "IP Address:" << WiFi.localIP() << endl;
+#endif
+}
+
+void displayWifi(SSD1306Wire *display, char status)
+{
+  char bannerBuff[14];
+  display->clear();
+  display->setFont(ArialMT_Plain_16);
+  display->setTextAlignment(TEXT_ALIGN_LEFT);
+
+  display->drawString(13, 0, "Wifi");
+
+  display->setFont(ArialMT_Plain_10);
+
+  display->drawString(3, 20, "Connecting");
+
+  sprintf(bannerBuff, "%c", status);
+  display->drawString(28, 28, bannerBuff);
+
+  display->display();
 }
 
 void displaySplash(SSD1306Wire *display, uint16 remainingTime)
@@ -326,38 +415,84 @@ void onreadT_RH_CO2Tmr()
 #endif
 }
 
-void onPublishData()
+void onMQTTMessage(char *topic, byte *payload, unsigned int length)
 {
-  //Serial.println(payload);
-  //String POSTURL = APIROOT + "sensors/airgradient:" + String(ESP.getChipId(),HEX) + "/measures";
-  String POSTURL = APIROOT + "posts/1";
+#ifdef DEBUG
+  Serial.print("Message arrived [");
+  Serial.print(topic);
+  Serial.print("] ");
 
-  WiFiClient client;
-  HTTPClient http;
-  http.begin(client, POSTURL);
-  //http.addHeader("content-type", "application/json");
-  int httpCode = http.GET();
-  if (httpCode < 0)
+#endif
+
+  DeserializationError err = deserializeJson(mqttMsgIn, payload);
+  if (err)
   {
-    Serial << "http Fault" << endl;
-    faultLEDTmr.setDelay(WIFI_FAULT_RATE);
-    faultLEDTmr.resume();
+    Serial << F("failed json read ") << err.f_str() << endl;
+  }
+
+  int coms = mqttMsgIn["YI-001"];
+
+  if (coms)
+  {
+    publishDataTmr.pause();
+#ifdef DEBUG
+    Serial << "turn OFF MQTT Publish" << endl;
+#endif
+  }
+  else
+  {
+    publishDataTmr.resume();
+#ifdef DEBUG
+    Serial << "turn ON MQTT Publish" << endl;
+#endif
+  }
+
+  //   for (int i = 0; i < length; i++)
+  //   {
+  //     Serial.print((char)payload[i]);
+  //   }
+  //   Serial.println();
+}
+
+void onpublishDataTmr()
+{
+
+  if (!mqttClient.connected())
+  {
+    reconnect();
   }
   else
   {
     disableLED();
   }
-  String httpResponse = http.getString();
+
+  sprintf(mqttMsgOut,
+          "{\"AT-001A\": %d, \"AT-001B\":%d, \"AT-001C\":%d, \"AT-001D\":%d,\"AT-001E\": %d, \"AT-001F\":%d,"
+          "\"AT-002A\":%d, \"AT-002B\":%d, \"AT-002C\": %d,"
+          "\"AT-003A\":%d, \"AT-003B\":%d, \"AT-003C\":%d,"
+          "\"AT-004\":%d, \"AT-005\":%.1f, \"AQI-001A\":%.1f,"
+          "\"AQI-001B\":%d, \"TI-001\":%.1f }",
+          pm25Data.PM_TOTALPARTICLES_0_3, pm25Data.PM_TOTALPARTICLES_0_5, pm25Data.PM_TOTALPARTICLES_1_0, pm25Data.PM_TOTALPARTICLES_2_5, pm25Data.PM_TOTALPARTICLES_5_0, pm25Data.PM_TOTALPARTICLES_10_0,
+          pm25Data.PM_SP_UG_1_0, pm25Data.PM_SP_UG_2_5, pm25Data.PM_SP_UG_10_0,
+          pm25Data.PM_AE_UG_1_0, pm25Data.PM_AE_UG_2_5, pm25Data.PM_AE_UG_10_0,
+          co2Level, ambientRelativeHumidity, airQualityData.index,
+          airQualityData.category, ambientTemperature);
+
 #ifdef DEBUG
-  Serial << "httpCode:" << httpCode << endl;
-  Serial << "httpResponse:" << httpResponse << endl;
+  Serial << "MQTT Topic:" << mqttTopic << endl;
+  Serial << "Msg:";
+  //Serial << "MQTT Message:" << mqttMsgOut << endl;
+  Serial.println(mqttMsgOut);
 #endif
-  http.end();
+
+  mqttClient.publish(mqttTopic, mqttMsgOut);
 }
 
 void onfaultLEDTmrBlink()
 {
+#ifdef DEBUG
   Serial << "Blink" << endl;
+#endif
   digitalWrite(WIFI_FAIL_LED, !digitalRead(WIFI_FAIL_LED));
 }
 
