@@ -66,16 +66,31 @@ typedef void (*function_t)(SSD1306Wire *display); // for array if functions. OLE
 const char *ssid = WIFI_SSID;
 const char *password = WIFI_PWD;
 const char *mqtt_server = "192.168.1.86";
+String displayID = "004-Jan30-22";
+
+
+
+String clientID = "AirQuality004";
+const char *hostCommandTopic = "AirQuality004";
+const char *mqttTopic = "Home/Hydroponic/AirQuality004/EU";
+const char *wifiHostName = "AirQuality004";
+
+// String clientID = "AirQuality003";
+// const char *hostCommandTopic = "AirQuality003";
+// const char *mqttTopic = "Home/Hydroponic/AirQuality003/EU";
+// const char *wifiHostName = "AirQuality003";
+
+
 
 // String clientID = "AirQuality002";
 // const char *hostCommandTopic = "AirQuality002";
 // const char *mqttTopic = "Home/Hydroponic/AirQuality002/EU";
 // const char *wifiHostName = "AirQuality002";
 
-String clientID = "AirQuality001";
-const char *hostCommandTopic = "AirQuality001";
-const char *mqttTopic = "Home/Hydroponic/AirQuality001/EU";
-const char *wifiHostName = "AirQuality001";
+// String clientID = "AirQuality001";
+// const char *hostCommandTopic = "AirQuality001";
+// const char *mqttTopic = "Home/Hydroponic/AirQuality001/EU";
+// const char *wifiHostName = "AirQuality001";
 
 
 
@@ -299,6 +314,8 @@ void displayOverlay(SSD1306Wire *display)
   display->setFont(ArialMT_Plain_10);
 
   display->drawString(0, 0, aqiUS[airQualityData.category]);
+  display->drawString(0, 38, displayID);
+
 }
 
 void displayHome(SSD1306Wire *display)
@@ -311,13 +328,13 @@ void displayHome(SSD1306Wire *display)
   display->setTextAlignment(TEXT_ALIGN_LEFT);
 
   sprintf(bannerBuff, "CO2: %d", co2Level);
-  display->drawString(0, 8, bannerBuff);
+  display->drawString(0, 9, bannerBuff);
 
   sprintf(bannerBuff, "T: %.1f", ambientTemperature);
-  display->drawString(15, 17, bannerBuff);
+  display->drawString(15, 18, bannerBuff);
 
   sprintf(bannerBuff, "H: %.1f", ambientRelativeHumidity);
-  display->drawString(15, 26, bannerBuff);
+  display->drawString(15, 27, bannerBuff);
   display->display();
 }
 
@@ -330,13 +347,13 @@ void displayPM25(SSD1306Wire *display)
   display->setFont(ArialMT_Plain_10);
 
   sprintf(bannerBuff, "PM1.0:%d", pm25Data.PM_SP_UG_1_0);
-  display->drawString(0, 8, bannerBuff);
+  display->drawString(0, 9, bannerBuff);
 
   sprintf(bannerBuff, "PM2.5:%d", pm25Data.PM_SP_UG_2_5);
-  display->drawString(0, 17, bannerBuff);
+  display->drawString(0, 18, bannerBuff);
 
   sprintf(bannerBuff, "PM10:%d", pm25Data.PM_SP_UG_10_0);
-  display->drawString(4, 26, bannerBuff);
+  display->drawString(4, 27, bannerBuff);
   display->display();
 }
 
@@ -349,13 +366,13 @@ void displayPM25Count1(SSD1306Wire *display)
   display->setFont(ArialMT_Plain_10);
 
   sprintf(bannerBuff, ">0.3um: %d", pm25Data.PM_TOTALPARTICLES_0_3);
-  display->drawString(0, 8, bannerBuff);
+  display->drawString(0, 9, bannerBuff);
 
   sprintf(bannerBuff, ">0.5um: %d", pm25Data.PM_TOTALPARTICLES_0_5);
-  display->drawString(0, 16, bannerBuff);
+  display->drawString(0, 18, bannerBuff);
 
   sprintf(bannerBuff, ">1.0um: %d", pm25Data.PM_TOTALPARTICLES_1_0);
-  display->drawString(0, 24, bannerBuff);
+  display->drawString(0, 27, bannerBuff);
   display->display();
 }
 
@@ -368,13 +385,13 @@ void displayPM25Count2(SSD1306Wire *display)
   display->setFont(ArialMT_Plain_10);
 
   sprintf(bannerBuff, ">2.5um: %d", pm25Data.PM_TOTALPARTICLES_2_5);
-  display->drawString(0, 8, bannerBuff);
+  display->drawString(0, 9, bannerBuff);
 
   sprintf(bannerBuff, ">5.0um: %d", pm25Data.PM_TOTALPARTICLES_5_0);
-  display->drawString(0, 16, bannerBuff);
+  display->drawString(0, 18, bannerBuff);
 
   sprintf(bannerBuff, ">10.um: %d", pm25Data.PM_TOTALPARTICLES_10_0);
-  display->drawString(0, 24, bannerBuff);
+  display->drawString(0, 25, bannerBuff);
   display->display();
 }
 
