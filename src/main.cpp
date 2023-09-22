@@ -18,7 +18,7 @@ SHT30/31 (Temperature/Humidity Sensor)
  *  @section Software uses Adafruit libraries and custom sensair8 library
              Compiled with platformIO
              required libraries and board can be found in platformio.ini
-             pushes data to a node-red endpoint from which it sends to 
+             pushes data to a node-red endpoint from which it sends to
 */
 
 #include <WiFiManager.h>
@@ -40,22 +40,24 @@ SHT30/31 (Temperature/Humidity Sensor)
 #include "AQI.h"
 #include "sensair8.h"
 #include "DA_NonBlockingDelay.h"
+#include "DA_DiscreteInput.h"
 #include "PMS.h"
-//#include "PM25.h"
+// #include "PM25.h"
 
 #define CO2_RH_POLL_RATE 10000            // ms
-#define MQTT_PUBLISH_RATE 30000            // ms
-#define FAULT_WAIT_WIFI_CONNECT_RATE 1000 //ms
+#define MQTT_PUBLISH_RATE 30000           // ms
+#define FAULT_WAIT_WIFI_CONNECT_RATE 1000 // ms
 #define MQTT_FAULT_RATE 500               // ms
 #define WIFI_MAX_RETRIES 3
 #define WIFI_WAIT_TIME 5000 // ms how long to wait for a connection
 
-#define OLED_REFRESH_RATE 4000 //ms
+#define OLED_REFRESH_RATE 4000 // ms
 
 #define PM25_SLEEP_DURATION 10000 // ms
 #define PM25_ACTIVE_RATE 5000     // ms
 
 #define WIFI_FAIL_LED D7
+#define PUSH_BUTTON D8
 
 #define SENSOR8_WARMUP_DELAY 10 //
 
@@ -65,34 +67,32 @@ typedef void (*function_t)(SSD1306Wire *display); // for array if functions. OLE
 
 const char *ssid = WIFI_SSID;
 const char *password = WIFI_PWD;
-const char *mqtt_server = "192.168.1.86";
-String displayID = "004-Jan30-22";
+// const char *mqtt_server = "192.168.1.86";
+const char *mqtt_server = "192.168.1.81";
 
+// String displayID = "005-Sep21-23";
+// String clientID = "AirQuality004";
+// const char *hostCommandTopic = "AirQuality004";
+// const char *mqttTopic = "Home/Hydroponic/AirQuality004/EU";
+// const char *wifiHostName = "AirQuality004";
 
+String displayID = "003-Sep21-23";
+String clientID = "AirQuality003";
+const char *hostCommandTopic = "AirQuality003";
+const char *mqttTopic = "Home/Hydroponic/AirQuality003/EU";
+const char *wifiHostName = "AirQuality003";
 
-String clientID = "AirQuality004";
-const char *hostCommandTopic = "AirQuality004";
-const char *mqttTopic = "Home/Hydroponic/AirQuality004/EU";
-const char *wifiHostName = "AirQuality004";
-
-// String clientID = "AirQuality003";
-// const char *hostCommandTopic = "AirQuality003";
-// const char *mqttTopic = "Home/Hydroponic/AirQuality003/EU";
-// const char *wifiHostName = "AirQuality003";
-
-
-
+// String displayID = "002-Sep21-23";
 // String clientID = "AirQuality002";
 // const char *hostCommandTopic = "AirQuality002";
 // const char *mqttTopic = "Home/Hydroponic/AirQuality002/EU";
-// const char *wifiHostName = "AirQuality002";
+// const char *wifiHostName = "AirQuality002"; 
 
-// String clientID = "AirQuality001";
-// const char *hostCommandTopic = "AirQuality001";
-// const char *mqttTopic = "Home/Hydroponic/AirQuality001/EU";
-// const char *wifiHostName = "AirQuality001";
-
-
+// String displayID = "001-Sep21-23";
+//  String clientID = "AirQuality001";
+//  const char *hostCommandTopic = "AirQuality001";
+//  const char *mqttTopic = "Home/Hydroponic/AirQuality001/EU";
+//  const char *wifiHostName = "AirQuality001";
 
 char mqttMsgOut[350];
 WiFiClient wifiClient;
@@ -115,6 +115,7 @@ void onreadT_RH_CO2Tmr();
 void onpublishDataTmr();
 void reconnect();
 void onMQTTMessage(char *topic, byte *payload, unsigned int length);
+void onPushButton(bool state, int aPin);
 
 void onPM25ReadReady();
 
@@ -143,7 +144,7 @@ int frameCount = 4;
 int currentFrame = 1;
 
 SoftwareSerial co2sensor_serial(D4, D3);
-//Sensair8 co2Sensor = Sensair8(&co2sensor_serial, &Serial);
+// Sensair8 co2Sensor = Sensair8(&co2sensor_serial, &Serial);
 Sensair8 co2Sensor = Sensair8(&co2sensor_serial);
 int16_t co2Level;
 
@@ -157,13 +158,17 @@ DA_NonBlockingDelay publishDataTmr = DA_NonBlockingDelay(MQTT_PUBLISH_RATE, onpu
 DA_NonBlockingDelay faultLEDTmr = DA_NonBlockingDelay(FAULT_WAIT_WIFI_CONNECT_RATE, onfaultLEDTmrBlink);
 DA_NonBlockingDelay refreshDisplayTmr = DA_NonBlockingDelay(OLED_REFRESH_RATE, onOLEDRefresh);
 
+DA_DiscreteInput HS_001 = DA_DiscreteInput(PUSH_BUTTON,
+                                           DA_DiscreteInput::RisingEdgeDetect,
+                                           false);
+bool isDisplayEnabled = false;
 bool wifiStatus = false;
 
 // set to true if you want to connect to wifi. The display will show values only when the sensor has wifi connection
 boolean connectWIFI = false;
 
 // change if you want to send the pm25Data to another server
-//String APIROOT = "http://hw.airgradient.com/";
+// String APIROOT = "http://hw.airgradient.com/";
 String APIROOT = "http://fakeapi.jsonparseronline.com/";
 
 void setup()
@@ -184,6 +189,9 @@ void setup()
   pm25Sensor.setSleepDuration(10000);
 
   pinMode(WIFI_FAIL_LED, OUTPUT);
+  HS_001.enableInternalPulldown();
+  HS_001.setPollingInterval(250); // ms
+  HS_001.setOnEdgeEvent(&onPushButton);
   disableLED();
 
 #ifdef ENABLE_WIFI
@@ -207,6 +215,7 @@ void loop()
   faultLEDTmr.refresh();
   pm25Sensor.refresh();
   refreshDisplayTmr.refresh();
+  HS_001.refresh();
 #ifdef ENABLE_WIFI
   publishDataTmr.refresh();
   mqttClient.loop();
@@ -229,7 +238,7 @@ void reconnect()
 #ifdef DEBUG
       Serial << "Connected.." << endl;
 #endif
-      //mqttClient.publish("outTopic", "hello world");
+      // mqttClient.publish("outTopic", "hello world");
       mqttClient.subscribe(hostCommandTopic);
     }
     else
@@ -309,13 +318,12 @@ void displaySplash(SSD1306Wire *display, uint16 remainingTime)
 
 void displayOverlay(SSD1306Wire *display)
 {
-  //char bannerBuff[20];
+  // char bannerBuff[20];
   display->setTextAlignment(TEXT_ALIGN_LEFT);
   display->setFont(ArialMT_Plain_10);
 
   display->drawString(0, 0, aqiUS[airQualityData.category]);
   display->drawString(0, 38, displayID);
-
 }
 
 void displayHome(SSD1306Wire *display)
@@ -393,6 +401,19 @@ void displayPM25Count2(SSD1306Wire *display)
   sprintf(bannerBuff, ">10.um: %d", pm25Data.PM_TOTALPARTICLES_10_0);
   display->drawString(0, 25, bannerBuff);
   display->display();
+}
+
+void onPushButton(bool state, int aPin)
+{
+#ifdef DEBUG
+
+  HS_001.serialize(&Serial, true);
+  //Serial << "isDisplayEnabled:" << isDisplayEnabled <<endl;
+
+#endif
+  //if( HS_001.getSample() == LOW)
+  isDisplayEnabled = !isDisplayEnabled;
+  onOLEDRefresh();
 }
 
 void onPM25ReadReady()
@@ -498,7 +519,7 @@ void onpublishDataTmr()
 #ifdef DEBUG
   Serial << "MQTT Topic:" << mqttTopic << endl;
   Serial << "Msg:";
-  //Serial << "MQTT Message:" << mqttMsgOut << endl;
+  // Serial << "MQTT Message:" << mqttMsgOut << endl;
   Serial.println(mqttMsgOut);
 #endif
 
@@ -521,11 +542,17 @@ void disableLED()
 
 void onOLEDRefresh()
 {
-
-  frames[currentFrame - 1](&display);
-  currentFrame++;
-  if (currentFrame > frameCount)
-    currentFrame = 1;
+  if( isDisplayEnabled )
+  {
+    frames[currentFrame - 1](&display);
+    currentFrame++;
+    if (currentFrame > frameCount)
+      currentFrame = 1;
+  }
+  else {
+      display.clear();
+      display.display();
+  }
 }
 // from adafruit demo
 void tracePM25Data()
@@ -566,4 +593,6 @@ void tracePM25Data()
   Serial.println(F("---------------------------------------"));
 
   Serial << "AQI Index:" << airQualityData.index << " Category:" << airQualityData.category << " name:" << aqiUS[airQualityData.category] << endl;
+
+
 }
