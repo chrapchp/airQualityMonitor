@@ -15,19 +15,45 @@ SHT30/31 (Temperature/Humidity Sensor)
  *  @author  peter c
  *  @date    11/24/2021
  *  @version 0.1
+ *  @history 11/25/2024 - integrated with home assistant
  *  @section Software uses Adafruit libraries and custom sensair8 library
              Compiled with platformIO
              required libraries and board can be found in platformio.ini
              pushes data to a node-red endpoint from which it sends to
 */
 
+
+/*  
+  Wrapper around Home Assistant libary to handle common steps for devices
+  auto discovery mqtt topic homeassistant/sensor/{uniqueID}/config
+  where unique id is deviceID from configPortal or mac if not defined
+
+  data is always published to mqtt
+  aha/{uniqueID}
+
+  listens on homeassistant/sensor/{uniqueID}
+  Only chekcs enable 
+  = 1 enables auto-discovery on home assistant
+  = 0 removes devices from home assistant
+  {
+  "device":
+    {
+      "name": "",
+      "host": "",
+      "token": "",
+      "mqttIP": "",
+      "enable":1
+    }
+}
+  
+*/
 #include <WiFiManager.h>
 #include <ESP8266WiFi.h>
 #include <ESP8266HTTPClient.h>
-#include <PubSubClient.h>
+// #include <PubSubClient.h>
 
 #include <ArduinoJson.h>
-
+#include <ArduinoHA.h>
 #include <Wire.h>
 #include <Streaming.h>
 #include <SoftwareSerial.h>
@@ -37,19 +63,24 @@ SHT30/31 (Temperature/Humidity Sensor)
 
 #include <Adafruit_SHT31.h>
 
+#include <DebugLog.h>
+#include <DA_NonBlockingDelay.h>
+#include <DA_DiscreteInput.h>
+#include <HA_Helper.h>
+
 #include "AQI.h"
 #include "sensair8.h"
-#include "DA_NonBlockingDelay.h"
-#include "DA_DiscreteInput.h"
+
 #include "PMS.h"
 // #include "PM25.h"
 
 #define CO2_RH_POLL_RATE 10000            // ms
-#define MQTT_PUBLISH_RATE 30000           // ms
 #define FAULT_WAIT_WIFI_CONNECT_RATE 1000 // ms
-#define MQTT_FAULT_RATE 500               // ms
-#define WIFI_MAX_RETRIES 3
-#define WIFI_WAIT_TIME 5000 // ms how long to wait for a connection
+#define MQTT_FAULT_LED_RATE 500           // ms
+
+// OLED display info
+// String clientID = "AirQuality001";
+String displayID = "07-Dec-24";
 
 #define OLED_REFRESH_RATE 4000 // ms
 
@@ -63,30 +94,229 @@ SHT30/31 (Temperature/Humidity Sensor)
 
 typedef void (*function_t)(SSD1306Wire *display); // for array if functions. OLED display frame
 
-#define TEST "purple2.4"
+/* Start - Home Assistant Stuff */
+#define SETUP_PIN D1
+#define PUBLISH_INTERVAL 30000 // 5 seconds
+const char *ORGNAME = "Cogito Methods";
+const char *APPVERSION = "1.1.0";
+const char *MODEL = "D1-Mini";
 
-const char *ssid = WIFI_SSID;
-const char *password = WIFI_PWD;
-// const char *mqtt_server = "192.168.1.86";
-const char *mqtt_server = "192.168.1.81";
+WiFiManager wm;
 
-// String displayID = "005-Sep21-23";
-// String clientID = "AirQuality004";
-// const char *hostCommandTopic = "AirQuality004";
-// const char *mqttTopic = "Home/Hydroponic/AirQuality004/EU";
-// const char *wifiHostName = "AirQuality004";
+WiFiClient client;
 
-String displayID = "003-Sep21-23";
-String clientID = "AirQuality003";
-const char *hostCommandTopic = "AirQuality003";
-const char *mqttTopic = "Home/Hydroponic/AirQuality003/EU";
-const char *wifiHostName = "AirQuality003";
+HA_Helper haHelper;
+HADevice device;
+HAMqtt mqtt(client, device);
+
+// Idle Timer Ev
+
+// uint delemete;
+void onIdle();
+DA_NonBlockingDelay idleTmr = DA_NonBlockingDelay(PUBLISH_INTERVAL, onIdle);
+
+void onMqttMessage(const char *topic, const uint8_t *payload, uint16_t length);
+void onMqttConnected();
+void onMqttDisconnected();
+void onMqttStateChanged(HAMqtt::ConnectionState state);
+
+JsonDocument jsonDoc;
+
+/* End - Home Assistant Stuff */
+
+/* Unique to Implementation*/
+
+String HAPM0_3SensorID = "AT-001A";
+String HAPM0_5SensorID = "AT-001B";
+String HAPM1_0SensorID = "AT-001C";
+String HAPM2_5SensorID = "AT-001D";
+String HAPM5_0SensorID = "AT-001E";
+String HAPM10_0SensorID = "AT-001F";
+
+String HA_SP_UG_1_0SensorID = "AT-002A";
+String HA_SP_UG_2_5SensorID = "AT-002B";
+String HA_SP_UG_10_0SensorID = "AT-002C";
+
+String HA_AE_UG_1_0SensorID = "AT-003A";
+String HA_AE_UG_2_5SensorID = "AT-003B";
+String HA_AE_UG_10_0SensorID = "AT-003C";
+
+String HACO2SensorID = "AT-004";
+String HAHumiditySensorID = "AT-005";
+
+String HAAQI_SensorID = "AQI-001A";
+String HACategory_SensorID = "AQI-001B";
+
+String HATemperatureSensorID = "TI-001";
+
+HASensorNumber *HAPM0_3Sensor;
+HASensorNumber *HAPM0_5Sensor;
+HASensorNumber *HAPM1_0Sensor;
+HASensorNumber *HAPM2_5Sensor;
+HASensorNumber *HAPM5_0Sensor;
+HASensorNumber *HAPM10_0Sensor;
+
+HASensorNumber *HA_SP_UG_1_0Sensor;
+HASensorNumber *HA_SP_UG_2_5Sensor;
+HASensorNumber *HA_SP_UG_10_0Sensor;
+
+HASensorNumber *HA_AE_UG_1_0Sensor;
+HASensorNumber *HA_AE_UG_2_5Sensor;
+HASensorNumber *HA_AE_UG_10_0Sensor;
+
+HASensorNumber *HACO2Sensor;
+HASensorNumber *HAHumiditySensor;
+HASensorNumber *HAAQI_Sensor;
+HASensorNumber *HACategory_Sensor;
+HASensorNumber *HATemperatureSensor;
+
+void setupHA()
+{
+  haHelper.referenceDevice(&device);
+  haHelper.referenceMqtt(&mqtt);
+  haHelper.refenceWifiManager(&wm);
+  haHelper.setupUIParams();
+}
+
+void setupDeviceSensor()
+{
+  haHelper.setupDevice(ORGNAME, APPVERSION, MODEL, haHelper.getDeviceName().c_str());
+
+  String id = "-" + haHelper.getToken();
+
+  HAPM0_3SensorID = HAPM0_3SensorID + id;
+  HAPM0_5SensorID = HAPM0_5SensorID + id;
+  HAPM1_0SensorID = HAPM1_0SensorID + id;
+
+  HAPM2_5SensorID = HAPM2_5SensorID + id;
+  HAPM5_0SensorID = HAPM5_0SensorID + id;
+  HAPM10_0SensorID = HAPM10_0SensorID + id;
+
+  HA_SP_UG_1_0SensorID = HA_SP_UG_1_0SensorID + id;
+  HA_SP_UG_2_5SensorID = HA_SP_UG_2_5SensorID + id;
+  HA_SP_UG_10_0SensorID = HA_SP_UG_10_0SensorID + id;
+
+  HA_AE_UG_1_0SensorID = HA_AE_UG_1_0SensorID + id;
+  HA_AE_UG_2_5SensorID = HA_AE_UG_2_5SensorID + id;
+  HA_AE_UG_10_0SensorID = HA_AE_UG_10_0SensorID + id;
+  HACO2SensorID = HACO2SensorID + id;
+  HAHumiditySensorID = HAHumiditySensorID + id;
+  HAAQI_SensorID = HAAQI_SensorID + id;
+  HACategory_SensorID = HACategory_SensorID + id;
+  HATemperatureSensorID = HATemperatureSensorID + id;
+
+  LOG_TRACE(id);
+
+  HAPM0_3Sensor = new HASensorNumber(HAPM0_3SensorID.c_str(), HASensorNumber::PrecisionP0);
+  HAPM0_5Sensor = new HASensorNumber(HAPM0_5SensorID.c_str(), HASensorNumber::PrecisionP0);
+  HAPM1_0Sensor = new HASensorNumber(HAPM1_0SensorID.c_str(), HASensorNumber::PrecisionP0);
+  HAPM2_5Sensor = new HASensorNumber(HAPM2_5SensorID.c_str(), HASensorNumber::PrecisionP0);
+  HAPM5_0Sensor = new HASensorNumber(HAPM5_0SensorID.c_str(), HASensorNumber::PrecisionP0);
+  HAPM10_0Sensor = new HASensorNumber(HAPM10_0SensorID.c_str(), HASensorNumber::PrecisionP0);
+  HA_SP_UG_1_0Sensor = new HASensorNumber(HA_SP_UG_1_0SensorID.c_str(), HASensorNumber::PrecisionP0);
+  HA_SP_UG_2_5Sensor = new HASensorNumber(HA_SP_UG_2_5SensorID.c_str(), HASensorNumber::PrecisionP0);
+  HA_SP_UG_10_0Sensor = new HASensorNumber(HA_SP_UG_10_0SensorID.c_str(), HASensorNumber::PrecisionP0);
+  HA_AE_UG_1_0Sensor = new HASensorNumber(HA_AE_UG_1_0SensorID.c_str(), HASensorNumber::PrecisionP0);
+  HA_AE_UG_2_5Sensor = new HASensorNumber(HA_AE_UG_2_5SensorID.c_str(), HASensorNumber::PrecisionP0);
+  HA_AE_UG_10_0Sensor = new HASensorNumber(HA_AE_UG_10_0SensorID.c_str(), HASensorNumber::PrecisionP0);
+  HACO2Sensor = new HASensorNumber(HACO2SensorID.c_str(), HASensorNumber::PrecisionP0);
+
+  HAHumiditySensor = new HASensorNumber(HAHumiditySensorID.c_str(), HASensorNumber::PrecisionP1);
+  HAAQI_Sensor = new HASensorNumber(HAAQI_SensorID.c_str(), HASensorNumber::PrecisionP1);
+  HACategory_Sensor = new HASensorNumber(HACategory_SensorID.c_str(), HASensorNumber::PrecisionP0);
+  HATemperatureSensor = new HASensorNumber(HATemperatureSensorID.c_str(), HASensorNumber::PrecisionP1);
+
+  HACO2Sensor->setIcon("mdi:molecule-co2");
+  HACO2Sensor->setName("CO2");
+  HACO2Sensor->setUnitOfMeasurement("ppm");
+
+  HAHumiditySensor->setIcon("mdi:water-percent");
+  HAHumiditySensor->setName("Humidity");
+  HAHumiditySensor->setUnitOfMeasurement("");
+
+  HAAQI_Sensor->setIcon("mdi:vector-point-plus");
+  HAAQI_Sensor->setName("AQI-US");
+  HAAQI_Sensor->setUnitOfMeasurement("");
+
+  HACategory_Sensor->setIcon("mdi:shape-outline");
+  HACategory_Sensor->setName("Category");
+  HACategory_Sensor->setUnitOfMeasurement("");
+
+  HATemperatureSensor->setIcon("mdi:thermometer");
+  HATemperatureSensor->setName("Temperature");
+  HATemperatureSensor->setUnitOfMeasurement("C");
+
+  // HAPM0_3Sensor->setIcon("mdi:thermometer");
+  HAPM0_3Sensor->setName("Particles - 0.3");
+  HAPM0_3Sensor->setUnitOfMeasurement("um/0.1L Air");
+
+  // HAPM0_5Sensor->setIcon("mdi:thermometer");
+  HAPM0_5Sensor->setName("Particles - 0.5");
+  HAPM0_5Sensor->setUnitOfMeasurement("um/0.1L Air");
+
+  // HAPM1_0Sensor->setIcon("mdi:thermometer");
+  HAPM1_0Sensor->setName("Particles - 1.0");
+  HAPM1_0Sensor->setUnitOfMeasurement("um/0.1L Air");
+
+  // HAPM2_5Sensor->setIcon("mdi:thermometer");
+  HAPM2_5Sensor->setName("Particles - 2.5");
+  HAPM2_5Sensor->setUnitOfMeasurement("um/0.1L Air");
+
+  // HAPM5_0Sensor->setIcon("mdi:thermometer");
+  HAPM5_0Sensor->setName("Particles - 5.0");
+  HAPM5_0Sensor->setUnitOfMeasurement("um/0.1L Air");
+
+  // HAPM10_0Sensor->setIcon("mdi:thermometer");
+  HAPM10_0Sensor->setName("Particles - 10.0");
+  HAPM10_0Sensor->setUnitOfMeasurement("um/0.1L Air");
+
+  // HA_SP_UG_1_0Sensor->setIcon("mdi:thermometer");
+  HA_SP_UG_1_0Sensor->setName("Sea Level - 1.0");
+  HA_SP_UG_1_0Sensor->setUnitOfMeasurement("um/m3");
+
+  // HA_SP_UG_2_5Sensor->setIcon("mdi:thermometer");
+  HA_SP_UG_2_5Sensor->setName("Sea Level - 2.5");
+  HA_SP_UG_2_5Sensor->setUnitOfMeasurement("um/m3");
+
+  // HA_SP_UG_10_0Sensor->setIcon("mdi:thermometer");
+  HA_SP_UG_10_0Sensor->setName("Sea Level - 10.0");
+  HA_SP_UG_10_0Sensor->setUnitOfMeasurement("um/m3");
+
+  // HA_AE_UG_1_0Sensor->setIcon("mdi:thermometer");
+  HA_AE_UG_1_0Sensor->setName("Ambient - 1.0");
+  HA_AE_UG_1_0Sensor->setUnitOfMeasurement("um/m3");
+
+  // HA_AE_UG_2_5Sensor->setIcon("mdi:thermometer");
+  HA_AE_UG_2_5Sensor->setName("Ambient - 2.5");
+  HA_AE_UG_2_5Sensor->setUnitOfMeasurement("um/m3");
+
+  // HA_AE_UG_10_0Sensor->setIcon("mdi:thermometer");
+  HA_AE_UG_10_0Sensor->setName("Ambient - 10.0");
+  HA_AE_UG_10_0Sensor->setUnitOfMeasurement("um/m3");
+
+  mqtt.onMessage(onMqttMessage);
+  mqtt.onConnected(onMqttConnected);
+  mqtt.setBufferSize(512);
+  mqtt.setKeepAlive(60);
+
+  mqtt.begin(haHelper.getMqttIP());
+}
+
+// const char *hostCommandTopic = "AirQuality014";
+// const char *mqttTopic = "Home/Hydroponic/AirQuality014/EU";
+// const char *wifiHostName = "AirQuality014";
+
+// String displayID = "003-Sep21-23";
+// String clientID = "AirQuality003";
+// const char *hostCommandTopic = "AirQuality003";
+// const char *mqttTopic = "Home/Hydroponic/AirQuality003/EU";
+// const char *wifiHostName = "AirQuality003";
 
 // String displayID = "002-Sep21-23";
 // String clientID = "AirQuality002";
 // const char *hostCommandTopic = "AirQuality002";
 // const char *mqttTopic = "Home/Hydroponic/AirQuality002/EU";
-// const char *wifiHostName = "AirQuality002"; 
+// const char *wifiHostName = "AirQuality002";
 
 // String displayID = "001-Sep21-23";
 //  String clientID = "AirQuality001";
@@ -94,12 +324,7 @@ const char *wifiHostName = "AirQuality003";
 //  const char *mqttTopic = "Home/Hydroponic/AirQuality001/EU";
 //  const char *wifiHostName = "AirQuality001";
 
-char mqttMsgOut[350];
-WiFiClient wifiClient;
-PubSubClient mqttClient(mqtt_server, 1883, wifiClient);
-StaticJsonDocument<100> mqttMsgIn;
-
-// forware declarations
+// forward declarations
 void displaySplash(SSD1306Wire *display, uint16 remainingTime);
 void displayWifi(SSD1306Wire *display, char status);
 
@@ -112,9 +337,6 @@ void displayPM25Count1(SSD1306Wire *display);
 void displayPM25Count2(SSD1306Wire *display);
 void onreadT_RH_CO2Tmr();
 
-void onpublishDataTmr();
-void reconnect();
-void onMQTTMessage(char *topic, byte *payload, unsigned int length);
 void onPushButton(bool state, int aPin);
 
 void onPM25ReadReady();
@@ -129,7 +351,7 @@ float ambientTemperature;
 float ambientRelativeHumidity;
 
 SoftwareSerial pmSerial(D5, D6);
-#ifdef DEBUG
+#if defined(DBG_LOG) && defined(DBG_SENSOR)
 PMS pm25Sensor(pmSerial, onPM25ReadReady, Serial);
 #else
 PMS pm25Sensor(pmSerial, onPM25ReadReady);
@@ -154,7 +376,7 @@ AQI_Data airQualityData;
 const char *aqiUS[7] = {"Good", "UnHealthySG", "Unhealthy", "V-Unhealthy", "Hazardous", "Uknown"};
 
 DA_NonBlockingDelay readT_RH_CO2Tmr = DA_NonBlockingDelay(CO2_RH_POLL_RATE, onreadT_RH_CO2Tmr);
-DA_NonBlockingDelay publishDataTmr = DA_NonBlockingDelay(MQTT_PUBLISH_RATE, onpublishDataTmr);
+
 DA_NonBlockingDelay faultLEDTmr = DA_NonBlockingDelay(FAULT_WAIT_WIFI_CONNECT_RATE, onfaultLEDTmrBlink);
 DA_NonBlockingDelay refreshDisplayTmr = DA_NonBlockingDelay(OLED_REFRESH_RATE, onOLEDRefresh);
 
@@ -162,51 +384,313 @@ DA_DiscreteInput HS_001 = DA_DiscreteInput(PUSH_BUTTON,
                                            DA_DiscreteInput::RisingEdgeDetect,
                                            false);
 bool isDisplayEnabled = false;
-bool wifiStatus = false;
 
-// set to true if you want to connect to wifi. The display will show values only when the sensor has wifi connection
-boolean connectWIFI = false;
+/**
+ * @brief - handle publishing of data to MQTT
+ *
+ */
+void onIdle()
+{
 
-// change if you want to send the pm25Data to another server
-// String APIROOT = "http://hw.airgradient.com/";
-String APIROOT = "http://fakeapi.jsonparseronline.com/";
+  if (haHelper.getConfig()->getCustomValue() == 1)
+  {
+
+#ifdef DBG_LOG
+    // LOG_ATTACH_SERIAL(Serial);
+
+    LOG_TRACE(String("mqtt IP:" + haHelper.getMqttIP().toString()));
+    LOG_TRACE(String("_deviceName:" + haHelper.getDeviceName()));
+    LOG_TRACE(String("_token:" + haHelper.getToken()));
+    LOG_TRACE(String("_hostName:" + haHelper.getHostName()));
+    LOG_TRACE(F("Updating sensor"));
+#endif
+
+    HACO2Sensor->setValue(co2Level, true);
+    HAHumiditySensor->setValue(ambientRelativeHumidity, true);
+    HATemperatureSensor->setValue(ambientTemperature, true);
+
+    HAPM0_3Sensor->setValue(pm25Data.PM_TOTALPARTICLES_0_3, true);
+    HAPM0_5Sensor->setValue(pm25Data.PM_TOTALPARTICLES_0_5, true);
+    HAPM1_0Sensor->setValue(pm25Data.PM_TOTALPARTICLES_1_0, true);
+    HAPM2_5Sensor->setValue(pm25Data.PM_TOTALPARTICLES_2_5, true);
+    HAPM5_0Sensor->setValue(pm25Data.PM_TOTALPARTICLES_5_0, true);
+    HAPM10_0Sensor->setValue(pm25Data.PM_TOTALPARTICLES_10_0, true);
+
+    HA_SP_UG_1_0Sensor->setValue(pm25Data.PM_SP_UG_1_0, true);
+    HA_SP_UG_2_5Sensor->setValue(pm25Data.PM_SP_UG_2_5, true);
+    HA_SP_UG_10_0Sensor->setValue(pm25Data.PM_SP_UG_10_0, true);
+
+    HA_AE_UG_1_0Sensor->setValue(pm25Data.PM_AE_UG_1_0, true);
+    HA_AE_UG_2_5Sensor->setValue(pm25Data.PM_AE_UG_2_5, true);
+    HA_AE_UG_10_0Sensor->setValue(pm25Data.PM_AE_UG_10_0, true);
+
+    HAAQI_Sensor->setValue(airQualityData.index, true);
+    HACategory_Sensor->setValue(airQualityData.category, true);
+
+    // HACO2Sensor.setValue(200 + delemete);
+    // delemete++;
+    //     HAHumiditySensor.setValue(25);
+    //     HATemperatureSensor.setValue(20);
+
+    //     HAPM0_3Sensor.setValue(1);
+    //     HAPM0_5Sensor.setValue(2);
+    //     HAPM1_0Sensor.setValue(3);
+    //     HAPM2_5Sensor.setValue(4);
+    //     HAPM5_0Sensor.setValue(5);
+    //     HAPM10_0Sensor.setValue(6);
+
+    //     HA_SP_UG_1_0Sensor.setValue(7);
+    //     HA_SP_UG_2_5Sensor.setValue(8);
+    //     HA_SP_UG_10_0Sensor.setValue(9);
+
+    //     HA_AE_UG_1_0Sensor.setValue(10);
+    //     HA_AE_UG_2_5Sensor.setValue(11);
+    //     HA_AE_UG_10_0Sensor.setValue(12);
+
+    //     HAAQI_Sensor.setValue(13);
+    //     HACategory_Sensor.setValue(14);
+
+    //  #if defined(DBG_LOG) && defined(DBG_SENSOR)
+    //    tracePM25Data();
+    //  #endif
+  }
+}
 
 void setup()
 {
-#ifdef DEBUG
-  Serial.begin(9600);
-#endif
-  sht31.begin(0x44);
+  haHelper.begin();
+  haHelper.loadSettings();
 
-  pmSerial.begin(9600);
+  WiFi.mode(WIFI_STA); // explicitly set mode, esp defaults to STA+AP
 
-  display.init();
-  display.flipScreenVertically();
-
-  pm25Sensor.passiveMode();
-  pm25Sensor.wakeUp();
-  // overide sleep duration if required but laser/fan should be allowe some time to ramp up 30s is good low end number
-  pm25Sensor.setSleepDuration(10000);
-
-  pinMode(WIFI_FAIL_LED, OUTPUT);
-  HS_001.enableInternalPulldown();
-  HS_001.setPollingInterval(250); // ms
-  HS_001.setOnEdgeEvent(&onPushButton);
-  disableLED();
-
-#ifdef ENABLE_WIFI
-  provisionWifi();
-  mqttClient.setBufferSize(380);
-  mqttClient.setServer(mqtt_server, 1883);
-  mqttClient.setCallback(onMQTTMessage);
-
+  // pinMode(SETUP_PIN, INPUT_PULLUP);
+#ifdef DBG_LOG
+  Serial.begin(115200);
 #endif
 
-  for (int i = SENSOR8_WARMUP_DELAY; i > 0; i--)
+  if (digitalRead(PUSH_BUTTON) == HIGH)
   {
-    displaySplash(&display, i);
-    delay(1000);
+#ifdef DBG_LOG
+    // LOG_ATTACH_SERIAL(Serial);
+
+    LOG_INFO(F("Not configured. STarting Config"));
+#endif
+    wm.startConfigPortal();
   }
+
+  else
+  {
+    setupHA();
+
+    if (!wm.autoConnect())
+    {
+
+#ifdef DBG_LOG
+      // LOG_ATTACH_SERIAL(Serial);
+
+      LOG_ERROR(F("Failed to connect to Wi-Fi and hit timeout."));
+
+#endif
+    }
+    else
+    {
+      // WiFi.begin();
+      wm.startWebPortal(); // Keeps portal accessible on the Wi-Fi I
+#ifdef DBG_LOG
+      Serial << WiFi.localIP() << endl;
+#endif
+      if (haHelper.getConfig()->isDeviceConfigured())
+      {
+#ifdef DBG_LOG
+        // LOG_ATTACH_SERIAL(Serial);
+
+        LOG_INFO(F("Device Configured...Setting sensors"));
+#endif
+        setupDeviceSensor();
+      }
+
+#ifdef DBG_LOG
+      // LOG_ATTACH_SERIAL(Serial);
+
+      LOG_INFO(F("Connected"));
+#endif
+      sht31.begin(0x44);
+
+      pmSerial.begin(9600);
+
+      display.init();
+      display.flipScreenVertically();
+
+      pm25Sensor.passiveMode();
+      pm25Sensor.wakeUp();
+      // overide sleep duration if required but laser/fan should be allowe some time to ramp up 30s is good low end number
+      pm25Sensor.setSleepDuration(10000);
+
+      pinMode(WIFI_FAIL_LED, OUTPUT);
+      HS_001.enableInternalPulldown();
+      HS_001.setPollingInterval(250); // ms
+      HS_001.setOnEdgeEvent(&onPushButton);
+      disableLED();
+
+      for (int i = SENSOR8_WARMUP_DELAY; i > 0; i--)
+      {
+        displaySplash(&display, i);
+        delay(1000);
+      }
+    }
+
+    if (digitalRead(SETUP_PIN) == LOW)
+    {
+      // Button pressed
+
+#ifdef DBG_LOG
+
+      LOG_INFO(F("Entering Setup-"));
+
+#endif
+
+      wm.startConfigPortal();
+    }
+    else
+    {
+
+#ifdef DBG_LOG
+
+      LOG_INFO(F("Starting with Config"));
+
+#endif
+
+#ifdef DBG_LOG
+
+      String macAddress = WiFi.macAddress();
+      LOG_INFO(String("Wifi Host Name:") + String(WiFi.getHostname()));
+      LOG_INFO(String("macAddress:") + macAddress);
+
+#endif
+    }
+  }
+}
+
+void unregisterDevice()
+{
+  haHelper.removeDiscovery(HAPM0_3Sensor);
+  haHelper.removeDiscovery(HAPM0_5Sensor);
+  haHelper.removeDiscovery(HAPM1_0Sensor);
+  haHelper.removeDiscovery(HAPM2_5Sensor);
+  haHelper.removeDiscovery(HAPM5_0Sensor);
+  haHelper.removeDiscovery(HAPM10_0Sensor);
+
+  haHelper.removeDiscovery(HA_SP_UG_1_0Sensor);
+  haHelper.removeDiscovery(HA_SP_UG_2_5Sensor);
+  haHelper.removeDiscovery(HA_SP_UG_10_0Sensor);
+
+  haHelper.removeDiscovery(HA_AE_UG_1_0Sensor);
+  haHelper.removeDiscovery(HA_AE_UG_2_5Sensor);
+  haHelper.removeDiscovery(HA_AE_UG_10_0Sensor);
+
+  haHelper.removeDiscovery(HACO2Sensor);
+  haHelper.removeDiscovery(HAHumiditySensor);
+
+  haHelper.removeDiscovery(HAAQI_Sensor);
+  haHelper.removeDiscovery(HACategory_Sensor);
+  haHelper.removeDiscovery(HATemperatureSensor);
+}
+
+// {
+//   "device":
+//     {
+//       "name": "hadevicez",
+//       "host": "hostname",
+//       "token": "abc",
+//       "mqttIP": "192.168.1.23",
+//       "enable":0
+//     }
+// }
+
+void onMqttMessage(const char *topic, const uint8_t *payload, uint16_t length)
+{
+  // This callback is called when message from MQTT broker is received.
+  // Please note that you should always verify if the message's topic is the one you expect.
+  // For example: if (memcmp(topic, "myCustomTopic") == 0) { ... }
+#ifdef DBG_LOG
+  LOG_TRACE(F("New message on topic:"));
+
+  LOG_TRACE(topic);
+
+  LOG_TRACE(F("Data:"));
+
+  for (int i = 0; i < length; i++)
+  {
+    Serial << (char)payload[i];
+  }
+  Serial << endl;
+#endif
+
+  DeserializationError error = deserializeJson(jsonDoc, payload);
+
+  // Test if parsing succeeds
+  if (error)
+  {
+    LOG_ERROR(F("deserializeJson() failed: "));
+    LOG_ERROR(error.f_str());
+    return;
+  }
+
+  bool mode = jsonDoc["device"]["enable"];
+
+  if (!mode)
+  {
+#ifdef DBG_LOG
+    LOG_TRACE(F("Removing Device from Auto Discovery."));
+#endif
+    unregisterDevice();
+    haHelper.getConfig()->setCustom(mode);
+    haHelper.getConfig()->persistConfig();
+  }
+  else
+  {
+#ifdef DBG_LOG
+    LOG_INFO(F("Provisioning Device."));
+#endif
+    haHelper.getConfig()->setCustom(mode);
+    haHelper.getConfig()->persistConfig();
+    mqtt.disconnect();
+    mqtt.begin(haHelper.getMqttIP());
+  }
+}
+
+void onMqttConnected()
+{
+
+  String tmp = haHelper.getSubscribePreTopic();
+  // You can subscribe to custom topic if you need
+
+  mqtt.subscribe(tmp.c_str());
+  disableLED();
+#ifdef DBG_LOG
+  LOG_TRACE(F("Connected to the broker!"));
+
+  LOG_TRACE((String(F("Suscribed to ")) + tmp).c_str());
+#endif
+}
+
+void onMqttDisconnected()
+{
+#ifdef DBG_LOG
+  LOG_TRACE(F("Disconnected from the broker!"));
+#endif
+
+  faultLEDTmr.setDelay(MQTT_FAULT_LED_RATE);
+  faultLEDTmr.resume();
+}
+
+void onMqttStateChanged(HAMqtt::ConnectionState state)
+{
+
+#ifdef DBG_LOG
+  LOG_TRACE(F("MQTT state changed to: "));
+  LOG_TRACE(static_cast<int8_t>(state));
+#endif
 }
 
 void loop()
@@ -216,66 +700,11 @@ void loop()
   pm25Sensor.refresh();
   refreshDisplayTmr.refresh();
   HS_001.refresh();
-#ifdef ENABLE_WIFI
-  publishDataTmr.refresh();
-  mqttClient.loop();
-#endif
-}
 
-void reconnect()
-{
+  wm.process();
 
-  if (!mqttClient.connected())
-  {
-#ifdef DEBUG
-    Serial << "Attempting MQTT connection..." << endl;
-#endif
-    // Create a random client ID
-    clientID += String(random(0xffff), HEX);
-    // Attempt to connect
-    if (mqttClient.connect(clientID.c_str()))
-    {
-#ifdef DEBUG
-      Serial << "Connected.." << endl;
-#endif
-      // mqttClient.publish("outTopic", "hello world");
-      mqttClient.subscribe(hostCommandTopic);
-    }
-    else
-    {
-#ifdef DEBUG
-      Serial << "MQTT Connect failed:(" << mqttClient.state() << ")" << endl;
-#endif
-
-      faultLEDTmr.setDelay(MQTT_FAULT_RATE);
-      faultLEDTmr.resume();
-    }
-  }
-}
-
-void provisionWifi()
-{
-  delay(10);
-  WiFi.mode(WIFI_STA);
-  WiFi.begin(ssid, password);
-  bool toggleStatus = false;
-
-  while (WiFi.status() != WL_CONNECTED)
-  {
-    delay(500);
-    displayWifi(&display, toggleStatus ? '+' : '-');
-    toggleStatus = !toggleStatus;
-
-#ifdef DEBUG
-    Serial << ".";
-#endif
-  }
-  randomSeed(micros());
-  WiFi.hostname(wifiHostName);
-#ifdef DEBUG
-  Serial << endl
-         << "IP Address:" << WiFi.localIP() << endl;
-#endif
+  idleTmr.refresh();
+  mqtt.loop();
 }
 
 void displayWifi(SSD1306Wire *display, char status)
@@ -405,13 +834,13 @@ void displayPM25Count2(SSD1306Wire *display)
 
 void onPushButton(bool state, int aPin)
 {
-#ifdef DEBUG
+#ifdef DBG_LOG
 
   HS_001.serialize(&Serial, true);
-  //Serial << "isDisplayEnabled:" << isDisplayEnabled <<endl;
+  // Serial << "isDisplayEnabled:" << isDisplayEnabled <<endl;
 
 #endif
-  //if( HS_001.getSample() == LOW)
+  // if( HS_001.getSample() == LOW)
   isDisplayEnabled = !isDisplayEnabled;
   onOLEDRefresh();
 }
@@ -419,23 +848,19 @@ void onPushButton(bool state, int aPin)
 void onPM25ReadReady()
 {
 
-  airQualityData.category = UNKNOWN;
-  airQualityData.index = -1;
+    airQualityData.category = UNKNOWN;
+    airQualityData.index = -1;
 
-  if (!pm25Sensor.readUntil(pm25Data))
-  {
-#ifdef DEBUG
-    Serial << "Could not read from PM25 sensor" << endl;
-#endif
-  }
-  else
-  {
-    airQualityData = aqi.get_AQI(pm25Data.PM_SP_UG_1_0, pm25Data.PM_SP_UG_2_5);
-  }
-
-#ifdef DEBUG
-  tracePM25Data();
-#endif
+    if (!pm25Sensor.readUntil(pm25Data))
+    {
+  #ifdef DBG_LOG
+      Serial << "Could not read from PM25 sensor" << endl;
+  #endif
+    }
+    else
+    {
+      airQualityData = aqi.get_AQI(pm25Data.PM_SP_UG_1_0, pm25Data.PM_SP_UG_2_5);
+    }
 }
 
 void onreadT_RH_CO2Tmr()
@@ -444,7 +869,7 @@ void onreadT_RH_CO2Tmr()
   ambientTemperature = sht31.readTemperature();
   ambientRelativeHumidity = sht31.readHumidity();
 
-#ifdef DEBUG
+#if defined(DBG_LOG) && defined(DBG_SENSOR)
 
   Serial << "CO2 Sensair:" << co2Level << " ppm" << endl;
   Serial << "Temperature:" << ambientTemperature << "C";
@@ -453,82 +878,9 @@ void onreadT_RH_CO2Tmr()
 #endif
 }
 
-void onMQTTMessage(char *topic, byte *payload, unsigned int length)
-{
-#ifdef DEBUG
-  Serial.print("Message arrived [");
-  Serial.print(topic);
-  Serial.print("] ");
-
-#endif
-
-  DeserializationError err = deserializeJson(mqttMsgIn, payload);
-  if (err)
-  {
-    Serial << F("failed json read ") << err.f_str() << endl;
-  }
-
-  int coms = mqttMsgIn["YI-001"];
-
-  if (coms)
-  {
-    publishDataTmr.pause();
-#ifdef DEBUG
-    Serial << "turn OFF MQTT Publish" << endl;
-#endif
-  }
-  else
-  {
-    publishDataTmr.resume();
-#ifdef DEBUG
-    Serial << "turn ON MQTT Publish" << endl;
-#endif
-  }
-
-  //   for (int i = 0; i < length; i++)
-  //   {
-  //     Serial.print((char)payload[i]);
-  //   }
-  //   Serial.println();
-}
-
-void onpublishDataTmr()
-{
-
-  if (!mqttClient.connected())
-  {
-    reconnect();
-  }
-  else
-  {
-    disableLED();
-  }
-
-  sprintf(mqttMsgOut,
-          "{\"AT-001A\": %d, \"AT-001B\":%d, \"AT-001C\":%d, \"AT-001D\":%d,\"AT-001E\": %d, \"AT-001F\":%d,"
-          "\"AT-002A\":%d, \"AT-002B\":%d, \"AT-002C\": %d,"
-          "\"AT-003A\":%d, \"AT-003B\":%d, \"AT-003C\":%d,"
-          "\"AT-004\":%d, \"AT-005\":%.1f, \"AQI-001A\":%.1f,"
-          "\"AQI-001B\":%d, \"TI-001\":%.1f }",
-          pm25Data.PM_TOTALPARTICLES_0_3, pm25Data.PM_TOTALPARTICLES_0_5, pm25Data.PM_TOTALPARTICLES_1_0, pm25Data.PM_TOTALPARTICLES_2_5, pm25Data.PM_TOTALPARTICLES_5_0, pm25Data.PM_TOTALPARTICLES_10_0,
-          pm25Data.PM_SP_UG_1_0, pm25Data.PM_SP_UG_2_5, pm25Data.PM_SP_UG_10_0,
-          pm25Data.PM_AE_UG_1_0, pm25Data.PM_AE_UG_2_5, pm25Data.PM_AE_UG_10_0,
-          co2Level, ambientRelativeHumidity, airQualityData.index,
-          airQualityData.category, ambientTemperature);
-
-#ifdef DEBUG
-  Serial << "MQTT Topic:" << mqttTopic << endl;
-  Serial << "Msg:";
-  // Serial << "MQTT Message:" << mqttMsgOut << endl;
-  Serial.println(mqttMsgOut);
-#endif
-
-  mqttClient.publish(mqttTopic, mqttMsgOut);
-}
-
 void onfaultLEDTmrBlink()
 {
-#ifdef DEBUG
+#ifdef DBG_LOG
   Serial << "Blink" << endl;
 #endif
   digitalWrite(WIFI_FAIL_LED, !digitalRead(WIFI_FAIL_LED));
@@ -542,16 +894,17 @@ void disableLED()
 
 void onOLEDRefresh()
 {
-  if( isDisplayEnabled )
+  if (isDisplayEnabled)
   {
     frames[currentFrame - 1](&display);
     currentFrame++;
     if (currentFrame > frameCount)
       currentFrame = 1;
   }
-  else {
-      display.clear();
-      display.display();
+  else
+  {
+    display.clear();
+    display.display();
   }
 }
 // from adafruit demo
@@ -593,6 +946,4 @@ void tracePM25Data()
   Serial.println(F("---------------------------------------"));
 
   Serial << "AQI Index:" << airQualityData.index << " Category:" << airQualityData.category << " name:" << aqiUS[airQualityData.category] << endl;
-
-
 }

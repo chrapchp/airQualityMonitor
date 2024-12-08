@@ -1,0 +1,27 @@
+Remove data from home assistant
+states table key is metadata_id
+
+delete from states where metadata_id in (...,...)
+delete from states_meta where metadata_id in (...,...)
+
+Press Ctrl + H (Windows/Linux) or Cmd + Alt + F (Mac).
+
+Enter the pattern \b\d{3}\b.   
+
+(.+) add comma 
+regex
+
+\1,
+
+
+
+
+\n   make everything 1 line
+
+(space) or ,
+
+
+// homeassistant/sensor/4169725175616c697479303031
+// homeassistant/sensor/4169725175616c697479303032
+// homeassistant/sensor/4169725175616c697479303033
+// homeassistant/sensor/4169725175616c697479303034
