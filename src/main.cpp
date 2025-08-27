@@ -232,11 +232,11 @@ void setupDeviceSensor()
 
   HAHumiditySensor->setIcon("mdi:water-percent");
   HAHumiditySensor->setName("Humidity");
-  HAHumiditySensor->setUnitOfMeasurement("");
+  HAHumiditySensor->setUnitOfMeasurement("%");
 
   HAAQI_Sensor->setIcon("mdi:vector-point-plus");
   HAAQI_Sensor->setName("AQI-US");
-  HAAQI_Sensor->setUnitOfMeasurement("");
+  HAAQI_Sensor->setUnitOfMeasurement(" ");
 
   HACategory_Sensor->setIcon("mdi:shape-outline");
   HACategory_Sensor->setName("Category");
